@@ -1,0 +1,219 @@
+* {
+    color: #e8eaf6;
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 12px;
+}
+
+QMainWindow {
+    background-color: #1f2233;
+}
+
+QFrame#Header {
+    background: transparent;
+}
+
+QLabel#TitleLabel {
+    font-size: 22px;
+    font-weight: 600;
+    color: #ffffff;
+}
+
+QLabel#SubtitleLabel {
+    color: #a3accf;
+    font-size: 12px;
+}
+
+QLabel#SectionHeading {
+    font-size: 13px;
+    font-weight: 600;
+    color: #c7ceef;
+    margin-bottom: 4px;
+}
+
+QLabel#HintLabel {
+    color: #8a93b9;
+    font-size: 11px;
+}
+
+QFrame#Card {
+    background-color: #282c40;
+    border-radius: 14px;
+    border: 1px solid rgba(255,255,255,0.04);
+}
+
+QLineEdit,
+QPlainTextEdit,
+QSpinBox,
+QDoubleSpinBox,
+QComboBox {
+    background-color: #1e2030;
+    border: 1px solid #3a3f58;
+    border-radius: 8px;
+    padding: 6px 10px;
+}
+
+QSpinBox,
+QDoubleSpinBox {
+    padding-right: 28px;
+}
+
+QSpinBox::up-button,
+QSpinBox::down-button,
+QDoubleSpinBox::up-button,
+QDoubleSpinBox::down-button {
+    background: #30324a;
+    border: none;
+    width: 20px;
+    margin: 2px;
+    border-radius: 6px;
+    subcontrol-origin: border;
+}
+QSpinBox::up-button,
+QDoubleSpinBox::up-button {
+    subcontrol-position: right top;
+}
+QSpinBox::down-button,
+QDoubleSpinBox::down-button {
+    subcontrol-position: right bottom;
+}
+
+QSpinBox::up-button:hover,
+QSpinBox::down-button:hover,
+QDoubleSpinBox::up-button:hover,
+QDoubleSpinBox::down-button:hover {
+    background: #3f4364;
+}
+
+QSpinBox::up-button:pressed,
+QSpinBox::down-button:pressed,
+QDoubleSpinBox::up-button:pressed,
+QDoubleSpinBox::down-button:pressed {
+    background: #5865f2;
+}
+
+QSpinBox::up-button:disabled,
+QSpinBox::down-button:disabled,
+QDoubleSpinBox::up-button:disabled,
+QDoubleSpinBox::down-button:disabled {
+    background: #26293c;
+}
+
+QSpinBox::up-arrow,
+QDoubleSpinBox::up-arrow {
+    width: 0;
+    height: 0;
+    border-left: 6px solid transparent;
+    border-right: 6px solid transparent;
+    border-bottom: 8px solid #e8eaf6;
+    margin: 4px;
+}
+QSpinBox::up-arrow:disabled,
+QDoubleSpinBox::up-arrow:disabled {
+    border-bottom-color: rgba(232,234,246,0.4);
+}
+
+QSpinBox::down-arrow,
+QDoubleSpinBox::down-arrow {
+    width: 0;
+    height: 0;
+    border-left: 6px solid transparent;
+    border-right: 6px solid transparent;
+    border-top: 8px solid #e8eaf6;
+    margin: 4px;
+}
+
+QSpinBox::down-arrow:disabled,
+QDoubleSpinBox::down-arrow:disabled {
+    border-top-color: rgba(232,234,246,0.4);
+}
+
+QLineEdit:focus,
+QPlainTextEdit:focus,
+QSpinBox:focus,
+QComboBox:focus {
+    border: 1px solid #7484ff;
+}
+
+QPlainTextEdit#LogView {
+    font-family: "Cascadia Code", "Consolas", monospace;
+    font-size: 11px;
+    background-color: #1a1c29;
+}
+
+QPlainTextEdit#ProxyList,
+QPlainTextEdit#ProxyActiveList {
+    font-family: "Cascadia Code", "Consolas", monospace;
+    font-size: 11px;
+}
+
+QPushButton {
+    background-color: #5865f2;
+    border-radius: 8px;
+    padding: 8px 18px;
+    border: none;
+    color: #ffffff;
+}
+
+QPushButton:hover {
+    background-color: #6f79ff;
+}
+
+QPushButton:disabled {
+    background-color: #3a3f58;
+    color: rgba(255,255,255,0.4);
+}
+
+QProgressBar {
+    border: none;
+    border-radius: 10px;
+    background-color: #23273a;
+    height: 18px;
+}
+
+QProgressBar::chunk {
+    border-radius: 10px;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                 stop:0 #8ea2ff, stop:1 #4d6bff);
+}
+
+QToolButton#DevToggle {
+    background-color: transparent;
+    border: none;
+    color: #8a93b9;
+}
+
+QToolButton#DevToggle:hover {
+    color: #ffffff;
+    background: rgba(255,255,255,0.05);
+    border-radius: 6px;
+}
+
+QToolButton#DevToggle:checked {
+    color: #ffffff;
+    background: rgba(88,101,242,0.25);
+}
+
+QToolTip{
+    background: rgba(0,0,0,0.05);
+}
+
+QTabWidget::pane {
+    border: none;
+    margin-top: 6px;
+}
+
+QTabBar::tab {
+    background: #23273a;
+    border-radius: 8px;
+    padding: 6px 14px;
+    margin-right: 6px;
+}
+
+QTabBar::tab:selected {
+    background: #5865f2;
+    color: #ffffff;
+}
+
+QTabBar::tab:hover {
+    background: #3a3f58;
+}

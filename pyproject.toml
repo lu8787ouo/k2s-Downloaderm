@@ -1,0 +1,25 @@
+[project]
+name = "k2s-downloader"
+version = "1.0.0"
+description = "Keep2Share downloader with CLI and PySide6 GUI"
+readme = "Readme.md"
+requires-python = ">=3.9"
+dependencies = [
+    "requests",
+    "tqdm",
+    "Pillow",
+    "requests-futures",
+    "PySide6",
+    "aiohttp>=3.12.15",
+    "pyinstaller>=6.16.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[project.scripts]
+k2s-downloader = "k2s_downloader.cli:main"
+k2s-downloader-gui = "k2s_downloader.gui.app:main"

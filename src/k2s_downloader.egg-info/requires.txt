@@ -1,0 +1,9 @@
+requests
+tqdm
+Pillow
+requests-futures
+PySide6
+
+[dev]
+pytest
+ruff

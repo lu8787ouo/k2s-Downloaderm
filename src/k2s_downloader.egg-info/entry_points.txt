@@ -1,0 +1,3 @@
+[console_scripts]
+k2s-downloader = k2s_downloader.cli:main
+k2s-downloader-gui = k2s_downloader.gui.app:main
