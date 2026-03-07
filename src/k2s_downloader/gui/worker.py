@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from typing import Optional
 
 from PySide6.QtCore import QThread, Signal
@@ -39,11 +40,82 @@ class DownloadWorker(QThread):  # pragma: no cover - Qt integration
         self._captcha_event = threading.Event()
         self._captcha_response = ""
         self._cancelled = False
+        self._progress_emit_interval = 0.12
+        self._proxy_emit_interval = 1.0
+        self._progress_lock = threading.Lock()
+        self._pending_progress: tuple[int, int, int, int] | None = None
+        self._last_progress_emit_at = 0.0
+        self._last_done_count = -1
+        self._proxy_lock = threading.Lock()
+        self._pending_proxy_state: tuple[list[str], list[str]] | None = None
+        self._last_proxy_emit_at = 0.0
+        self._last_proxy_signature: tuple[int, tuple[str, ...]] | None = None
+        self._proxy_labels_cache: list[str] = []
+        self._proxy_count = 0
 
     def _proxy_state_callback(self, proxies, active_indexes):
-        labels = [f"[{idx}] {value or 'LOCAL'}" for idx, value in enumerate(proxies)]
+        if not self._proxy_labels_cache or len(proxies) != self._proxy_count:
+            self._proxy_count = len(proxies)
+            self._proxy_labels_cache = [f"[{idx}] {value or 'LOCAL'}" for idx, value in enumerate(proxies)]
+        labels = self._proxy_labels_cache
         active = [labels[i] for i in active_indexes if 0 <= i < len(labels)]
-        self.proxy_state.emit(labels, active)
+        self._emit_proxy_state(labels, active)
+
+    def _emit_progress(self, force: bool = False) -> None:
+        payload = None
+        now = time.monotonic()
+        with self._progress_lock:
+            if self._pending_progress is None:
+                return
+            downloaded, total, done, total_parts = self._pending_progress
+            interval_ok = now - self._last_progress_emit_at >= self._progress_emit_interval
+            progress_done = total > 0 and downloaded >= total
+            should_emit = force or interval_ok or done != self._last_done_count or progress_done
+            if not should_emit:
+                return
+            payload = self._pending_progress
+            self._pending_progress = None
+            self._last_progress_emit_at = now
+            self._last_done_count = done
+
+        if payload is not None:
+            self.progress.emit(*payload)
+
+    def _progress_callback(self, downloaded: int, total: int, done: int, total_parts: int) -> None:
+        with self._progress_lock:
+            self._pending_progress = (downloaded, total, done, total_parts)
+        self._emit_progress()
+
+    def _emit_proxy_state(self, labels: list[str], active: list[str], force: bool = False) -> None:
+        emit_payload: tuple[list[str], list[str]] | None = None
+        now = time.monotonic()
+        signature = (len(labels), tuple(active))
+
+        with self._proxy_lock:
+            self._pending_proxy_state = (labels, active)
+            if signature == self._last_proxy_signature and not force:
+                return
+
+            interval_ok = now - self._last_proxy_emit_at >= self._proxy_emit_interval
+            if not (force or interval_ok):
+                return
+
+            emit_payload = self._pending_proxy_state
+            self._pending_proxy_state = None
+            self._last_proxy_emit_at = now
+            self._last_proxy_signature = signature
+
+        if emit_payload is not None:
+            self.proxy_state.emit(*emit_payload)
+
+    def _flush_pending_signals(self) -> None:
+        self._emit_progress(force=True)
+        pending_proxy: tuple[list[str], list[str]] | None
+        with self._proxy_lock:
+            pending_proxy = self._pending_proxy_state
+            self._pending_proxy_state = None
+        if pending_proxy is not None:
+            self.proxy_state.emit(*pending_proxy)
 
     def _captcha_callback(self, image_bytes: bytes, challenge: str, captcha_url: str) -> str:
         self._captcha_event.clear()
@@ -65,7 +137,7 @@ class DownloadWorker(QThread):  # pragma: no cover - Qt integration
     def run(self) -> None:
         downloader = Downloader(
             status_callback=self.status.emit,
-            progress_callback=self.progress.emit,
+            progress_callback=self._progress_callback,
             proxy_state_callback=self._proxy_state_callback,
             show_console_progress=False,
         )
@@ -88,6 +160,7 @@ class DownloadWorker(QThread):  # pragma: no cover - Qt integration
         else:
             self.succeeded.emit(str(output_path))
         finally:
+            self._flush_pending_signals()
             self._downloader = None
             self._captcha_event.set()
             self.stopped.emit()

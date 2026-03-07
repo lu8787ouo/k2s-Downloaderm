@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import time
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QCloseEvent, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -47,7 +47,15 @@ class MainWindow(QMainWindow):  # pragma: no cover - GUI wiring
         self._current_available_raw: list[str | None] = []
         self._collapsed_height: int | None = None
         self._collapsed_height: int | None = None
+        self._pending_progress: tuple[int, int, int, int] | None = None
+        self._log_buffer: list[str] = []
+        self._ui_refresh_interval_ms = 120
+        self._max_log_flush_per_tick = 40
         self._setup_ui()
+        self._ui_tick_timer = QTimer(self)
+        self._ui_tick_timer.setInterval(self._ui_refresh_interval_ms)
+        self._ui_tick_timer.timeout.connect(self._on_ui_tick)
+        self._ui_tick_timer.start()
         self._start_proxy_loader(False)
 
     def _setup_ui(self) -> None:
@@ -375,7 +383,7 @@ class MainWindow(QMainWindow):  # pragma: no cover - GUI wiring
             split_size=split_size,
             ensure_media_check=ensure_check,
         )
-        worker.progress.connect(self._update_progress)
+        worker.progress.connect(self._on_progress_signal)
         worker.status.connect(self._append_log)
         worker.error.connect(self._handle_error)
         worker.succeeded.connect(self._handle_finished)
@@ -392,7 +400,7 @@ class MainWindow(QMainWindow):  # pragma: no cover - GUI wiring
     def cancel_download(self) -> None:
         if self._worker:
             self._worker.cancel()
-            self._append_log("Cancellation requested…")
+            self._append_log("Cancellation requested…", immediate=True)
 
     def submit_captcha(self) -> None:
         if not self._worker:
@@ -405,7 +413,17 @@ class MainWindow(QMainWindow):  # pragma: no cover - GUI wiring
         self.captcha_group.setVisible(False)
         self.captcha_input.clear()
 
-    def _update_progress(self, downloaded: int, total: int, done: int, total_parts: int) -> None:
+    def _on_progress_signal(self, downloaded: int, total: int, done: int, total_parts: int) -> None:
+        self._pending_progress = (downloaded, total, done, total_parts)
+
+    def _on_ui_tick(self) -> None:
+        if self._pending_progress is not None:
+            downloaded, total, done, total_parts = self._pending_progress
+            self._pending_progress = None
+            self._render_progress(downloaded, total, done, total_parts)
+        self._flush_log_buffer()
+
+    def _render_progress(self, downloaded: int, total: int, done: int, total_parts: int) -> None:
         max_value = max(1, total // self._progress_scale)
         self.progress_bar.setRange(0, max_value)
         self.progress_bar.setValue(max(0, downloaded // self._progress_scale))
@@ -464,14 +482,15 @@ class MainWindow(QMainWindow):  # pragma: no cover - GUI wiring
     def _update_proxy_state(self, proxies: list[str], active: list[str]) -> None:
         self._current_available = proxies
         self._current_active = active
-        available_text = "\n".join(proxies) if proxies else "(none)"
-        active_text = "\n".join(active) if active else "(none)"
         available_count = max(len(self._current_available_raw) - 1, 0) if self._current_available_raw else max(len(proxies) - 1, 0)
         active_count = len(active)
         self.dev_available_label.setText(f"Available proxies: {available_count}")
-        self.dev_available_list.setPlainText(available_text)
         self.dev_active_label.setText(f"Active proxies: {active_count}")
-        self.dev_active_list.setPlainText(active_text)
+        if self.dev_group.isVisible():
+            available_text = "\n".join(proxies) if proxies else "(none)"
+            active_text = "\n".join(active) if active else "(none)"
+            self.dev_available_list.setPlainText(available_text)
+            self.dev_active_list.setPlainText(active_text)
         limit_value = self.proxy_limit_spin.value()
         limit_text = "All" if limit_value == 0 else str(limit_value)
         self.proxy_summary_label.setText(f"Available: {available_count} | Active: {active_count} | Limit: {limit_text}")
@@ -508,7 +527,7 @@ class MainWindow(QMainWindow):  # pragma: no cover - GUI wiring
             self._append_log(f"Proxy refresh completed in {self._format_duration(elapsed)}")
 
     def _handle_proxy_loader_error(self, message: str) -> None:
-        self._append_log(f"Proxy refresh failed: {message}")
+        self._append_log(f"Proxy refresh failed: {message}", immediate=True)
         QMessageBox.warning(self, "Proxy refresh failed", message)
 
     def _on_proxy_loader_finished(self) -> None:
@@ -518,17 +537,29 @@ class MainWindow(QMainWindow):  # pragma: no cover - GUI wiring
         self._proxy_loader = None
         self._proxy_load_start = None
 
-    def _append_log(self, message: str) -> None:
-        self.log_view.appendPlainText(message)
+    def _flush_log_buffer(self) -> None:
+        if not self._log_buffer:
+            return
+        batch = self._log_buffer[: self._max_log_flush_per_tick]
+        del self._log_buffer[: self._max_log_flush_per_tick]
+        self.log_view.appendPlainText("\n".join(batch))
+
+    def _append_log(self, message: str, immediate: bool = False) -> None:
+        if immediate:
+            self._flush_log_buffer()
+            self.log_view.appendPlainText(message)
+            return
+        self._log_buffer.append(message)
 
     def _handle_error(self, message: str) -> None:
+        self._append_log(f"Download failed: {message}", immediate=True)
         QMessageBox.critical(self, "Download failed", message)
 
     def _handle_finished(self, output_path: str) -> None:
-        self._append_log(f"Download finished: {output_path}")
+        self._append_log(f"Download finished: {output_path}", immediate=True)
         if self._download_start_time is not None:
             elapsed = time.monotonic() - self._download_start_time
-            self._append_log(f"Completed in {self._format_duration(elapsed)}")
+            self._append_log(f"Completed in {self._format_duration(elapsed)}", immediate=True)
         QMessageBox.information(self, "Download complete", f"Saved to\n{output_path}")
 
     def _show_captcha(self, image_bytes: bytes, challenge: str, captcha_url: str) -> None:
@@ -540,6 +571,8 @@ class MainWindow(QMainWindow):  # pragma: no cover - GUI wiring
         self.captcha_input.setFocus()
 
     def _reset_state(self) -> None:
+        self._pending_progress = None
+        self._flush_log_buffer()
         self.start_button.setEnabled(True)
         self.cancel_button.setEnabled(False)
         self.status_label.setText("Idle")
@@ -560,6 +593,7 @@ class MainWindow(QMainWindow):  # pragma: no cover - GUI wiring
         self._worker = None
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        self._ui_tick_timer.stop()
         if self._worker:
             self._worker.cancel()
             self._worker.wait(1000)
