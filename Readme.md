@@ -28,6 +28,10 @@ uv run k2s-downloader "https://k2s.cc/file/abc123" --threads 20 --split-size 20M
 
 ## GUI Usage
 ```
+uv run k2s-downloader-gui
+```
+Alternative:
+```
 uv run -- python -m k2s_downloader.gui.app
 ```
 Provide the K2S link inside the application, optionally override the output filename, adjust the thread count and split size, then start the download. Captcha prompts appear inline.

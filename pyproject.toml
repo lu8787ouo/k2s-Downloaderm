@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "k2s-downloader"
 version = "1.0.0"
@@ -23,3 +27,9 @@ dev = [
 [project.scripts]
 k2s-downloader = "k2s_downloader.cli:main"
 k2s-downloader-gui = "k2s_downloader.gui.app:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
