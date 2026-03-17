@@ -23,7 +23,7 @@ uv run k2s-downloader <k2s_url> [--filename NAME] [--threads N] [--split-size SI
 ```
 Example:
 ```
-uv run k2s-downloader https://k2s.cc/file/abc123 --threads 20 --split-size 20M
+uv run k2s-downloader "https://k2s.cc/file/abc123" --threads 20 --split-size 20MB
 ```
 
 ## GUI Usage
