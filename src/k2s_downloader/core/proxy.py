@@ -1,30 +1,79 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import pathlib
-import random
-import time
-from concurrent.futures import as_completed
+import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, List, Optional
 
 import requests
-from requests_futures.sessions import FuturesSession
 from tqdm import tqdm
 
 StatusCallback = Optional[Callable[[str], None]]
 
-HTTPS_BATCH_SIZE = 50
-HTTPS_TIMEOUT = 5.0
-HTTPS_RETRIES = 1
+# Public HTTP(S) proxy lists. Each one is plain text containing ip:port entries
+# (optionally prefixed with a scheme); a source that fails to load is skipped.
+PROXY_SOURCES = [
+    "https://api.proxyscrape.com/?request=getproxies&proxytype=https&timeout=10000&country=all&ssl=all&anonymity=all",
+    "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=10000&country=all&ssl=yes&anonymity=all",
+    "https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&protocol=http&proxy_format=ipport&format=text&timeout=10000",
+    "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
+    "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
+    "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/http/data.txt",
+]
 
+# Cloudflare's trace endpoint echoes the caller's IP ("ip=1.2.3.4"), which lets us
+# confirm the proxy really changes our exit IP. (api.myip.com, used previously, is dead.)
+IP_CHECK_URL = "https://www.cloudflare.com/cdn-cgi/trace"
+# Cheap K2S API call: proves the proxy can actually reach K2S and isn't blocked by it.
+K2S_CHECK_URL = "https://k2s.cc/api/v2/getFilesInfo"
 
-def _batched(items: List[str], size: int):
-    for idx in range(0, len(items), size):
-        yield items[idx : idx + size]
+CHECK_TIMEOUT = 5.0
+K2S_TIMEOUT = 8.0
+CHECK_WORKERS = 200
+
+_PROXY_RE = re.compile(r"(\d{1,3}(?:\.\d{1,3}){3}:\d{2,5})")
 
 
 def _emit_status(callback: StatusCallback, message: str) -> None:
     if callback:
         callback(message)
+
+
+def _fetch_candidates(status_callback: StatusCallback) -> List[str]:
+    candidates: List[str] = []
+    for url in PROXY_SOURCES:
+        host = url.split("/")[2]
+        try:
+            text = requests.get(url, timeout=30).text
+        except requests.RequestException as exc:
+            _emit_status(status_callback, f"Proxy source {host} failed: {exc.__class__.__name__}")
+            continue
+        found = _PROXY_RE.findall(text)
+        _emit_status(status_callback, f"Proxy source {host}: {len(found)} candidates")
+        candidates.extend(found)
+    return candidates
+
+
+def _get_own_ip() -> Optional[str]:
+    try:
+        match = re.search(r"ip=(\S+)", requests.get(IP_CHECK_URL, timeout=10).text)
+    except requests.RequestException:
+        return None
+    return match.group(1) if match else None
+
+
+def _check_proxy(proxy: str, own_ip: Optional[str]) -> bool:
+    prox = {"https": f"http://{proxy}"}
+    try:
+        trace = requests.get(IP_CHECK_URL, proxies=prox, timeout=CHECK_TIMEOUT)
+        if not trace.ok or "ip=" not in trace.text:
+            return False
+        if own_ip and f"ip={own_ip}" in trace.text:
+            return False  # transparent proxy: K2S would still see our own IP
+        k2s = requests.post(K2S_CHECK_URL, json={"ids": []}, proxies=prox, timeout=K2S_TIMEOUT)
+        return k2s.status_code < 500 and k2s.headers.get("content-type", "").startswith("application/json")
+    except Exception:
+        return False
 
 
 def get_working_proxies(
@@ -63,21 +112,11 @@ def get_working_proxies(
         fetch_remote = refresh or not cached_proxies
 
     if fetch_remote:
-        _emit_status(status_callback, "Fetching proxy candidates from proxyscrape.com ...")
-        https_resp = requests.get(
-            "https://api.proxyscrape.com/?request=getproxies&proxytype=https&timeout=10000&country=all&ssl=all&anonymity=all",
-            timeout=30,
-        )
-        proxies.extend(filter(None, https_resp.text.splitlines()))
+        _emit_status(status_callback, f"Fetching proxy candidates from {len(PROXY_SOURCES)} sources ...")
+        proxies.extend(_fetch_candidates(status_callback))
 
     # Remove duplicates while preserving order
-    seen = set()
-    deduped: List[str] = []
-    for proxy in proxies:
-        if proxy and proxy not in seen:
-            deduped.append(proxy)
-            seen.add(proxy)
-    proxies = deduped
+    proxies = list(dict.fromkeys(p for p in proxies if p))
 
     if not proxies:
         _emit_status(status_callback, "No proxy candidates available.")
@@ -91,76 +130,35 @@ def get_working_proxies(
     else:
         _emit_status(status_callback, f"Validating {len(proxies)} proxies ...")
 
-    total_candidates = len(proxies)
-    if total_candidates == 0:
-        return [None]
+    own_ip = _get_own_ip()
+    if own_ip is None:
+        _emit_status(status_callback, "Could not determine own IP; transparent proxies won't be filtered.")
 
-    working_set: set[str] = set()
-    https_progress = tqdm(total=total_candidates, desc="HTTPS check", unit="proxy") if status_callback is None else None
+    working: List[str] = []
+    progress = tqdm(total=len(proxies), desc="Proxy check", unit="proxy") if status_callback is None else None
 
-    remaining = list(proxies)
-    attempt = 0
-    validated_count = 0
+    # One flat pool instead of fixed batches: a batch has to wait for its slowest
+    # (timed-out) proxy, which made validating thousands of candidates very slow.
+    with ThreadPoolExecutor(max_workers=CHECK_WORKERS) as pool:
+        futures = {pool.submit(_check_proxy, proxy, own_ip): proxy for proxy in proxies}
+        for checked, future in enumerate(as_completed(futures), start=1):
+            if future.result():
+                working.append(futures[future])
+            if progress:
+                progress.update(1)
+                progress.set_postfix(working=len(working))
+            elif checked % 500 == 0:
+                _emit_status(status_callback, f"Checked {checked}/{len(proxies)} proxies, {len(working)} working ...")
 
-    while remaining and attempt < HTTPS_RETRIES:
-        attempt += 1
-        next_remaining: List[str] = []
-        if status_callback is not None:
-            _emit_status(status_callback, f"HTTPS attempt {attempt}/{HTTPS_RETRIES} on {len(remaining)} proxies ...")
+    if progress:
+        progress.close()
 
-        for batch in _batched(remaining, HTTPS_BATCH_SIZE):
-            session = FuturesSession(max_workers=min(len(batch), HTTPS_BATCH_SIZE))
-            futures = []
-            for proxy in batch:
-                future = session.get(
-                    "https://api.myip.com",
-                    proxies={"https": f"http://{proxy}"},
-                    timeout=HTTPS_TIMEOUT,
-                )
-                future.proxy = proxy  # type: ignore[attr-defined]
-                futures.append(future)
-
-            batch_success = 0
-            for future in as_completed(futures):
-                proxy_label = getattr(future, "proxy", "<unknown>")
-                try:
-                    future.result()
-                    if proxy_label not in working_set:
-                        working_set.add(proxy_label)
-                        batch_success += 1
-                except KeyboardInterrupt:
-                    raise
-                except Exception:
-                    if attempt < HTTPS_RETRIES:
-                        next_remaining.append(proxy_label)
-                finally:
-                    validated_count += 1
-                    if status_callback is not None and validated_count % 1000 == 0:
-                        _emit_status(
-                            status_callback,
-                            f"HTTPS validated {validated_count} proxy attempts so far ...",
-                        )
-
-            session.close()
-            if https_progress:
-                https_progress.update(batch_success)
-            sleep_time = random.uniform(0.2, 0.4)
-            time.sleep(sleep_time)
-
-        if status_callback is not None and next_remaining:
-            _emit_status(status_callback, f"HTTPS pending {len(next_remaining)} proxies after attempt {attempt}.")
-        remaining = next_remaining
-
-    if https_progress:
-        https_progress.close()
-
-    working_proxies = list(working_set)
-    if not working_proxies:
-        _emit_status(status_callback, "No proxies passed HTTPS validation.")
+    if not working:
+        _emit_status(status_callback, "No proxies passed validation.")
         cache_path.write_text("")
         return [None]
 
-    cache_path.write_text("\n".join(working_proxies))
-    _emit_status(status_callback, f"Found {len(working_proxies)} working proxies.")
+    cache_path.write_text("\n".join(working))
+    _emit_status(status_callback, f"Found {len(working)} working proxies.")
 
-    return [None] + working_proxies
+    return [None] + working

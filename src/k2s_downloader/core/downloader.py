@@ -279,6 +279,7 @@ class Downloader:
         )
 
         stop = False
+        fatal_errors: List[BaseException] = []
 
         def report_progress(delta: int) -> None:
             if delta == 0:
@@ -334,8 +335,15 @@ class Downloader:
                         proxies=prox,
                         timeout=20,
                     )
+                    # Anything but 206 means the server ignored the Range header (or errored),
+                    # so the body is not our chunk. Leave the buffer empty and the size check retries it.
+                    if response.status_code == 206:
+                        chunks = response.iter_content(self.block_size)
+                    else:
+                        response.close()
+                        chunks = ()
 
-                    for data in response.iter_content(self.block_size):
+                    for data in chunks:
                         if self.stop_event.is_set():
                             stop = True
                             break
@@ -345,15 +353,24 @@ class Downloader:
                         buffer.write(data)
                         report_progress(len(data))
 
-                chunk_bytes = len(buffer.getvalue())
-                if not math.isclose(chunk_bytes, expected_bytes, abs_tol=1):
+                chunk_bytes = buffer.getbuffer().nbytes
+                if chunk_bytes != expected_bytes:
+                    # Incomplete or oversized response: discard and let the scheduler retry.
+                    # Locks are released in the finally block below.
                     report_progress(-chunk_bytes)
                     range_meta["inUse"] = False
-                    if self.url_locks[thread_index].locked():
-                        self.url_locks[thread_index].release()
                     return
 
-                tmp_filename.write_bytes(buffer.getvalue())
+                try:
+                    tmp_filename.write_bytes(buffer.getvalue())
+                except OSError as exc:
+                    # Disk full / permission denied won't fix itself by retrying: abort the download.
+                    report_progress(-chunk_bytes)
+                    range_meta["inUse"] = False
+                    fatal_errors.append(exc)
+                    self.stop_event.set()
+                    return
+
                 if proxy_idx not in self.working_proxy_indexes:
                     self.working_proxy_indexes.append(proxy_idx)
                     self._notify_proxy_state()
@@ -368,6 +385,12 @@ class Downloader:
                     progress_bar.desc = f"[{done}/{len(ranges)}] Downloaded"
                 if self.progress_callback:
                     self.progress_callback(self._bytes_downloaded, self._total_bytes, done, self._ranges_total)
+            except Exception as exc:
+                # Any unexpected error must free the range, otherwise the scheduler waits on it forever.
+                if not range_meta.get("downloaded"):
+                    report_progress(-buffer.getbuffer().nbytes)
+                    range_meta["inUse"] = False
+                self.log(f"Chunk {index} failed: {exc!r}")
             finally:
                 if added_to_active:
                     with self._proxy_state_lock:
@@ -391,8 +414,7 @@ class Downloader:
 
                     part_path = self.tmp_dir / f"{filename}.part{str(idx).zfill(len(str(split_count)))}"
                     if part_path.exists():
-                        existing = part_path.read_bytes()
-                        if math.isclose(len(existing), meta["bytes"], abs_tol=1):
+                        if part_path.stat().st_size == meta["bytes"]:
                             if not meta["downloaded"]:
                                 report_progress(int(meta["bytes"]))
                                 meta["downloaded"] = True
@@ -430,6 +452,8 @@ class Downloader:
             self._notify_proxy_state()
             progress_bar.close()
 
+        if fatal_errors:
+            raise RuntimeError(f"Failed to write chunk to disk: {fatal_errors[0]}") from fatal_errors[0]
         if stop:
             raise DownloadCancelled("Download cancelled")
 
@@ -450,20 +474,19 @@ class Downloader:
 
     @staticmethod
     def _build_ranges(total_value: int, split_count: int) -> Dict[str, Dict[str, object]]:
+        # Integer arithmetic keeps ranges contiguous: range i ends exactly one byte
+        # before range i+1 starts, and the last range ends at total_value - 1.
+        # (Float math + round() used to leave gaps/overlaps on .5 boundaries.)
         range_dict: Dict[str, Dict[str, object]] = {}
         for i in range(split_count):
-            start = int(round(1 + i * total_value / (split_count * 1.0), 0))
-            end = int(round(1 + i * total_value / (split_count * 1.0) + total_value / (split_count * 1.0) - 1, 0))
+            start = i * total_value // split_count
+            end = (i + 1) * total_value // split_count - 1
             range_dict[str(i)] = {
                 "inUse": False,
                 "downloaded": False,
                 "range": f"{start}-{end}",
                 "bytes": end - start + 1,
             }
-        first = range_dict["0"]
-        _, end = str(first["range"]).split("-")
-        first["range"] = f"0-{end}"
-        first["bytes"] = int(first["bytes"]) + 1
         return range_dict
 
     @staticmethod
